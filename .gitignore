@@ -1,0 +1,22 @@
+# --- اطلاعات حساس: هرگز نباید commit شوند ---
+.env
+*.env
+!.env.example
+
+# --- فایل‌های داده‌ی زمان اجرا (وضعیت واقعی مشتریان/تنظیمات) ---
+settings_store.json
+pending_requests_store.json
+rate_limit_store.json
+customer_accounts_store.json
+
+# --- فایل کانفیگ OpenVPN (حاوی کلید خصوصی؛ به‌صورت جدا و خصوصی نگه‌داری شود) ---
+vpn_client.ovpn
+
+# --- محیط پایتون ---
+venv/
+__pycache__/
+*.pyc
+
+# --- سایر ---
+.DS_Store
+*.log
