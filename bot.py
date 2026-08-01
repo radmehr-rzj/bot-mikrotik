@@ -14,6 +14,7 @@ import asyncio
 import re
 import time
 import os
+import html
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
@@ -186,12 +187,18 @@ def _create_vpn_account_text(username, password, profile, shared_users: int = 1)
         device_line = f"📱 محدودیت: تا {shared_users} دستگاه همزمان قابل اتصال است"
     else:
         device_line = "📱 محدودیت: تک‌دستگاه (این اکانت فقط روی یک دستگاه همزمان قابل اتصال است)"
+    # از تگ <code> (HTML) استفاده می‌شود تا در تلگرام با یک لمس/کلیک، یوزرنیم و
+    # پسورد کپی شوند. مقادیر escape می‌شوند تا کاراکترهای خاص HTML مشکلی ایجاد نکنند.
+    safe_username = html.escape(str(username))
+    safe_password = html.escape(str(password))
+    safe_profile = html.escape(str(profile))
     return (
         "✅ اکانت VPN شما با موفقیت ساخته و فعال شد.\n\n"
-        f"👤 یوزرنیم: {username}\n"
-        f"🔑 پسورد: {password}\n"
-        f"📅 پروفایل: {profile}\n"
-        f"{device_line}"
+        f"👤 یوزرنیم: <code>{safe_username}</code>\n"
+        f"🔑 پسورد: <code>{safe_password}</code>\n"
+        f"📅 پروفایل: {safe_profile}\n"
+        f"{device_line}\n\n"
+        "💡 با لمس/کلیک روی یوزرنیم یا پسورد، کپی می‌شود."
     )
 
 
@@ -558,6 +565,7 @@ async def addvpn_get_extra_users(update: Update, context: ContextTypes.DEFAULT_T
             await status_msg.edit_text(
                 _create_vpn_account_text(username, password, profile, shared_users),
                 reply_markup=home_button_keyboard(),
+                parse_mode="HTML",
             )
             customer_accounts.record_purchase(requester.id, username, profile, shared_users)
             await send_purchase_tutorial(context, update.effective_chat.id, username, password)
@@ -656,11 +664,11 @@ async def addvpn_get_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE)
     extra_caption_line = f"👥 کاربر اضافه: {extra_users}\n" if extra_users else ""
     caption = (
         "🧾 رسید پرداخت جدید\n\n"
-        f"👤 یوزرنیم درخواستی: {username}\n"
-        f"📅 پروفایل: {profile}\n"
+        f"👤 یوزرنیم درخواستی: <code>{html.escape(username)}</code>\n"
+        f"📅 پروفایل: {html.escape(profile)}\n"
         f"{extra_caption_line}"
         f"💰 مبلغ کل: {_format_toman(grand_total) if grand_total else 'نامشخص'}\n"
-        f"💬 مشتری: {display_name} (ID: {requester.id})"
+        f"💬 مشتری: {html.escape(display_name)} (ID: {requester.id})"
     )
 
     try:
@@ -669,6 +677,7 @@ async def addvpn_get_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE)
             photo=photo_file_id,
             caption=caption,
             reply_markup=admin_keyboard,
+            parse_mode="HTML",
         )
     except Exception:
         logger.exception("Failed to forward receipt to admin")
@@ -1156,6 +1165,7 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
                 chat_id=req["chat_id"],
                 text=_create_vpn_account_text(req["username"], req["password"], req["profile"], shared_users),
                 reply_markup=home_button_keyboard(),
+                parse_mode="HTML",
             )
             await send_purchase_tutorial(context, req["chat_id"], req["username"], req["password"])
         except DuplicateUserError as e:
