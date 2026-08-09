@@ -36,6 +36,7 @@ import settings_store
 import backup as backup_module
 import customer_accounts
 import bot_users
+import discount_codes
 
 # ---------------------- تنظیمات لاگ ----------------------
 logging.basicConfig(
@@ -45,8 +46,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------- استیت‌های ConversationHandler ----------------------
-ADD_USERNAME, ADD_PASSWORD, ADD_PROFILE, ADD_EXTRA_USERS, ADD_RECEIPT = range(5)
+ADD_USERNAME, ADD_PASSWORD, ADD_PROFILE, ADD_EXTRA_USERS, ADD_DISCOUNT_ASK, ADD_DISCOUNT_CODE, ADD_RECEIPT = range(7)
 DEL_USERNAME = 100
+
+# استیت‌های مکالمه ساخت کد تخفیف جدید (/addcode)
+ADDCODE_CODE, ADDCODE_TYPE, ADDCODE_VALUE, ADDCODE_MAXUSES, ADDCODE_EXPIRY = range(400, 405)
 
 # فقط حروف انگلیسی، عدد، نقطه، خط تیره و آندرلاین؛ طول ۳ تا ۳۲ کاراکتر
 _USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{3,32}$")
@@ -61,6 +65,7 @@ MENU_HOME_CB = "menu_home"
 MENU_TUTORIAL_CB = "menu_tutorial"
 MENU_MY_ACCOUNTS_CB = "menu_my_accounts"
 MENU_STATS_CB = "menu_stats"
+MENU_DISCOUNTS_CB = "menu_discounts"
 TUTORIAL_L2TP_CB = "tut_l2tp"
 TUTORIAL_OVPN_CB = "tut_ovpn"
 
@@ -86,6 +91,7 @@ def main_menu_keyboard(admin: bool) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("📊 آمار کاربران", callback_data=MENU_STATS_CB),
                 InlineKeyboardButton("⚙️ مدیریت ربات", callback_data=MENU_MANAGE_CB),
             ],
+            [InlineKeyboardButton("🏷 کدهای تخفیف", callback_data=MENU_DISCOUNTS_CB)],
         ]
     else:
         rows = [
@@ -215,6 +221,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/delvpn - حذف یک یوزر\n"
             "/listvpn - نمایش لیست یوزرهای موجود\n"
             "/pending - لیست درخواست‌های در انتظار تایید\n"
+            "/addcode - ساخت کد تخفیف جدید\n"
+            "/codes - لیست و مدیریت کدهای تخفیف\n"
             "/settings - پنل مدیریت کامل تنظیمات ربات\n"
             "/backup - دریافت فوری فایل بک‌آپ\n"
             "/restore - بازیابی از فایل بک‌آپ\n"
@@ -226,11 +234,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         text = (
-            "🤖 سلام! با این ربات می‌تونید یوزر VPN (OpenVPN / L2TP) بخرید.\n\n"
-            "از دکمه زیر استفاده کنید، یا /addvpn را بزنید.\n"
-            "/tutorial - آموزش اتصال L2TP/OpenVPN\n"
-            "/myaccounts - اکانت‌های VPN که خریداری کرده‌اید\n"
-            "/cancel - لغو عملیات جاری"
+            "🤖 سلام به ربات 24H-shop خوش آمدید\n"
+            "با این ربات می‌تونید یوزر VPN (OpenVPN / L2TP) بخرید.\n\n"
         )
 
     # ثبت کاربر جدید و اطلاع‌رسانی فوری به ادمین (فقط اگر خود ادمین نباشد)
@@ -580,7 +585,7 @@ async def addvpn_get_extra_users(update: Update, context: ContextTypes.DEFAULT_T
             context.user_data.clear()
         return ConversationHandler.END
 
-    # ---------------- مسیر کاربر عادی: نمایش شماره کارت و درخواست رسید ----------------
+    # ---------------- مسیر کاربر عادی: قبل از نمایش شماره کارت، سوال کد تخفیف ----------------
     if not Config.CARD_NUMBER:
         await update.message.reply_text(
             "❌ در حال حاضر امکان پرداخت فعال نیست. لطفاً بعداً یا از طریق پشتیبانی اقدام کنید."
@@ -588,35 +593,124 @@ async def addvpn_get_extra_users(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data.clear()
         return ConversationHandler.END
 
+    context.user_data['discount_code'] = None
+    context.user_data['discount_amount'] = 0
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏷 کد تخفیف دارم", callback_data="discount_yes")],
+        [InlineKeyboardButton("➡️ ندارم، ادامه بده", callback_data="discount_no")],
+        [InlineKeyboardButton("🚫 لغو", callback_data="flow_cancel")],
+    ])
+    await update.message.reply_text("🏷 کد تخفیف دارید؟", reply_markup=keyboard)
+    return ADD_DISCOUNT_ASK
+
+
+def _compute_totals(context: ContextTypes.DEFAULT_TYPE):
+    """
+    محاسبه یکجای تمام مبالغ خرید جاری بر اساس context.user_data:
+    قیمت پایه، جمع کاربران اضافه، مبلغ تخفیف (در صورت وجود کد معتبر ثبت‌شده)
+    و مبلغ نهایی قابل پرداخت.
+    خروجی: (base_amount, extra_amount_total, discount_amount, grand_total)
+    """
     price = context.user_data.get('price')
     extra_price = context.user_data.get('extra_price')
+    extra_users = context.user_data.get('extra_users', 0)
+    discount_amount = context.user_data.get('discount_amount', 0) or 0
+
     base_amount = _parse_price_to_number(price)
     extra_amount_each = _parse_price_to_number(extra_price)
     extra_amount_total = extra_amount_each * extra_users
-    grand_total = base_amount + extra_amount_total
+    subtotal = base_amount + extra_amount_total
+    grand_total = max(subtotal - discount_amount, 0)
+
+    return base_amount, extra_amount_total, discount_amount, grand_total
+
+
+async def _send_payment_screen(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش صفحه نهایی پرداخت (قیمت + تخفیف در صورت وجود + شماره کارت) و درخواست رسید"""
+    profile = context.user_data.get('profile')
+    price = context.user_data.get('price')
+    extra_price = context.user_data.get('extra_price')
+    extra_users = context.user_data.get('extra_users', 0)
+    discount_code = context.user_data.get('discount_code')
+
+    base_amount, extra_amount_total, discount_amount, grand_total = _compute_totals(context)
 
     extra_line = ""
     if extra_users > 0:
         extra_line = (
-            f"👥 کاربر اضافه: {extra_users} × {_format_toman(extra_amount_each)} = "
+            f"👥 کاربر اضافه: {extra_users} × {_format_toman(_parse_price_to_number(extra_price))} = "
             f"{_format_toman(extra_amount_total)}\n"
         )
 
-    total_line = f"💰 مبلغ کل قابل پرداخت: {_format_toman(grand_total)}\n" if grand_total else ""
+    discount_line = ""
+    if discount_amount:
+        discount_line = f"🏷 تخفیف ({discount_code}): -{_format_toman(discount_amount)}\n"
+
+    total_line = f"💰 مبلغ کل قابل پرداخت: {_format_toman(grand_total)}\n" if (base_amount or extra_amount_total) else ""
     holder_line = f"👤 به نام: {Config.CARD_HOLDER_NAME}\n" if Config.CARD_HOLDER_NAME else ""
 
-    await update.message.reply_text(
-        f"📅 تعرفه انتخابی: {profile}\n"
-        f"💵 قیمت پایه: {price}\n"
-        f"{extra_line}"
-        f"{total_line}"
-        "💳 لطفاً مبلغ را به شماره کارت زیر واریز کنید:\n\n"
-        f"`{Config.CARD_NUMBER}`\n"
-        f"{holder_line}\n"
-        "📸 بعد از واریز، لطفاً عکس رسید پرداخت را همینجا ارسال کنید.",
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"📅 تعرفه انتخابی: {profile}\n"
+            f"💵 قیمت پایه: {price}\n"
+            f"{extra_line}"
+            f"{discount_line}"
+            f"{total_line}"
+            "💳 لطفاً مبلغ را به شماره کارت زیر واریز کنید:\n\n"
+            f"`{Config.CARD_NUMBER}`\n"
+            f"{holder_line}\n"
+            "📸 بعد از واریز، لطفاً عکس رسید پرداخت را همینجا ارسال کنید."
+        ),
         parse_mode="Markdown",
         reply_markup=CANCEL_INLINE_KEYBOARD,
     )
+
+
+async def discount_ask_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """پاسخ به سوال «کد تخفیف دارید؟»؛ هم از مرحله انتخاب اولیه و هم از مرحله رد یک کد نامعتبر صدا زده می‌شود"""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "discount_yes":
+        await query.edit_message_text("🏷 کد تخفیف را وارد کنید:", reply_markup=CANCEL_INLINE_KEYBOARD)
+        return ADD_DISCOUNT_CODE
+
+    # discount_no: بدون کد تخفیف ادامه بده
+    context.user_data['discount_code'] = None
+    context.user_data['discount_amount'] = 0
+    await query.edit_message_text("➡️ بدون کد تخفیف ادامه می‌دهیم.")
+    await _send_payment_screen(query.message.chat.id, context)
+    return ADD_RECEIPT
+
+
+async def addvpn_get_discount_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت متنی کد تخفیف از کاربر، اعتبارسنجی و اعمال آن روی مبلغ نهایی"""
+    code_raw = update.message.text.strip()
+    ok, reason, entry = discount_codes.validate(code_raw)
+
+    if not ok:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➡️ ادامه بدون کد تخفیف", callback_data="discount_no")],
+            [InlineKeyboardButton("🚫 لغو", callback_data="flow_cancel")],
+        ])
+        await update.message.reply_text(
+            f"❗️ {reason}\nکد دیگری وارد کنید یا بدون تخفیف ادامه دهید:",
+            reply_markup=keyboard,
+        )
+        return ADD_DISCOUNT_CODE
+
+    subtotal = _parse_price_to_number(context.user_data.get('price')) + \
+        _parse_price_to_number(context.user_data.get('extra_price')) * context.user_data.get('extra_users', 0)
+    discount_amount = discount_codes.compute_discount_amount(entry, subtotal)
+
+    normalized_code = code_raw.strip().upper()
+    context.user_data['discount_code'] = normalized_code
+    context.user_data['discount_amount'] = discount_amount
+
+    await update.message.reply_text(f"✅ کد «{normalized_code}» اعمال شد: {_format_toman(discount_amount)} تخفیف.")
+    await _send_payment_screen(update.effective_chat.id, context)
     return ADD_RECEIPT
 
 
@@ -634,11 +728,9 @@ async def addvpn_get_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE)
     profile = context.user_data.get('profile')
     price = context.user_data.get('price')
     extra_users = context.user_data.get('extra_users', 0)
-    extra_price = context.user_data.get('extra_price')
+    discount_code = context.user_data.get('discount_code')
 
-    base_amount = _parse_price_to_number(price)
-    extra_amount_total = _parse_price_to_number(extra_price) * extra_users
-    grand_total = base_amount + extra_amount_total
+    base_amount, extra_amount_total, discount_amount, grand_total = _compute_totals(context)
 
     photo_file_id = update.message.photo[-1].file_id  # بزرگترین سایز عکس
 
@@ -651,6 +743,8 @@ async def addvpn_get_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE)
         telegram_display=(f"@{requester.username}" if requester.username else requester.full_name),
         chat_id=update.effective_chat.id,
         extra_users=extra_users,
+        discount_code=discount_code,
+        discount_amount=discount_amount,
     )
 
     display_name = f"@{requester.username}" if requester.username else requester.full_name
@@ -662,11 +756,16 @@ async def addvpn_get_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ])
 
     extra_caption_line = f"👥 کاربر اضافه: {extra_users}\n" if extra_users else ""
+    discount_caption_line = (
+        f"🏷 کد تخفیف: {html.escape(discount_code)} (-{_format_toman(discount_amount)})\n"
+        if discount_code else ""
+    )
     caption = (
         "🧾 رسید پرداخت جدید\n\n"
         f"👤 یوزرنیم درخواستی: <code>{html.escape(username)}</code>\n"
         f"📅 پروفایل: {html.escape(profile)}\n"
         f"{extra_caption_line}"
+        f"{discount_caption_line}"
         f"💰 مبلغ کل: {_format_toman(grand_total) if grand_total else 'نامشخص'}\n"
         f"💬 مشتری: {html.escape(display_name)} (ID: {requester.id})"
     )
@@ -881,6 +980,203 @@ async def settings_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==================================================================
+#                  مدیریت کدهای تخفیف (فقط ادمین)
+#   /addcode برای ساخت کد جدید (مکالمه چندمرحله‌ای) و /codes برای
+#   نمایش لیست کدها همراه با دکمه فعال/غیرفعال و حذف هر کدام.
+# ==================================================================
+_CODE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{3,20}$")
+
+
+@admin_only
+async def addcode_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await _reply(
+        update, context,
+        "🏷 کد تخفیف جدید را وارد کنید (فقط حروف/عدد انگلیسی، خط‌تیره یا آندرلاین؛ ۳ تا ۲۰ کاراکتر):\n"
+        "مثال: SUMMER20",
+        reply_markup=CANCEL_INLINE_KEYBOARD,
+    )
+    return ADDCODE_CODE
+
+
+async def addcode_get_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    code = update.message.text.strip().upper()
+    if not _CODE_PATTERN.match(code):
+        await update.message.reply_text(
+            "❗️ فرمت کد نامعتبر است. فقط حروف/عدد انگلیسی، خط‌تیره یا آندرلاین (۳ تا ۲۰ کاراکتر). دوباره وارد کنید:",
+            reply_markup=CANCEL_INLINE_KEYBOARD,
+        )
+        return ADDCODE_CODE
+
+    if discount_codes.get_code(code):
+        await update.message.reply_text(
+            "❗️ این کد از قبل وجود دارد. لطفاً کد دیگری وارد کنید یا اول کد قبلی را از /codes حذف کنید:",
+            reply_markup=CANCEL_INLINE_KEYBOARD,
+        )
+        return ADDCODE_CODE
+
+    context.user_data['new_code'] = code
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("٪ درصدی", callback_data="ctype_percent"),
+            InlineKeyboardButton("💵 مبلغ ثابت", callback_data="ctype_fixed"),
+        ],
+        [InlineKeyboardButton("🚫 لغو", callback_data="flow_cancel")],
+    ])
+    await update.message.reply_text("نوع تخفیف را انتخاب کنید:", reply_markup=keyboard)
+    return ADDCODE_TYPE
+
+
+async def addcode_get_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    code_type = "percent" if query.data == "ctype_percent" else "fixed"
+    context.user_data['code_type'] = code_type
+
+    hint = "عددی بین ۱ تا ۱۰۰ (درصد تخفیف)" if code_type == "percent" else "مبلغ تخفیف به تومان (فقط عدد)"
+    await query.edit_message_text(
+        f"مقدار تخفیف را وارد کنید:\n{hint}",
+        reply_markup=CANCEL_INLINE_KEYBOARD,
+    )
+    return ADDCODE_VALUE
+
+
+async def addcode_get_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = update.message.text.strip().replace(",", "")
+    code_type = context.user_data.get('code_type')
+    try:
+        value = float(raw)
+    except ValueError:
+        await update.message.reply_text(
+            "❗️ این مقدار باید عدد باشد. دوباره وارد کنید:",
+            reply_markup=CANCEL_INLINE_KEYBOARD,
+        )
+        return ADDCODE_VALUE
+
+    if code_type == "percent" and not (0 < value <= 100):
+        await update.message.reply_text(
+            "❗️ درصد تخفیف باید بین ۱ تا ۱۰۰ باشد. دوباره وارد کنید:",
+            reply_markup=CANCEL_INLINE_KEYBOARD,
+        )
+        return ADDCODE_VALUE
+    if code_type == "fixed" and value <= 0:
+        await update.message.reply_text(
+            "❗️ مبلغ تخفیف باید بزرگ‌تر از صفر باشد. دوباره وارد کنید:",
+            reply_markup=CANCEL_INLINE_KEYBOARD,
+        )
+        return ADDCODE_VALUE
+
+    context.user_data['code_value'] = value
+    await update.message.reply_text(
+        "👥 حداکثر تعداد دفعات استفاده از این کد چند بار باشد؟\n(عدد 0 یعنی نامحدود)",
+        reply_markup=CANCEL_INLINE_KEYBOARD,
+    )
+    return ADDCODE_MAXUSES
+
+
+async def addcode_get_maxuses(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = update.message.text.strip()
+    if not raw.isdigit():
+        await update.message.reply_text(
+            "❗️ لطفاً یک عدد صحیح وارد کنید (0 برای نامحدود):",
+            reply_markup=CANCEL_INLINE_KEYBOARD,
+        )
+        return ADDCODE_MAXUSES
+
+    max_uses = int(raw)
+    context.user_data['code_max_uses'] = None if max_uses == 0 else max_uses
+    await update.message.reply_text(
+        "⏱ این کد بعد از چند روز منقضی شود؟\n(عدد 0 یعنی بدون انقضا)",
+        reply_markup=CANCEL_INLINE_KEYBOARD,
+    )
+    return ADDCODE_EXPIRY
+
+
+async def addcode_get_expiry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = update.message.text.strip()
+    if not raw.isdigit():
+        await update.message.reply_text(
+            "❗️ لطفاً یک عدد صحیح وارد کنید (0 برای بدون انقضا):",
+            reply_markup=CANCEL_INLINE_KEYBOARD,
+        )
+        return ADDCODE_EXPIRY
+
+    days = int(raw)
+    expires_at = (time.time() + days * 86400) if days > 0 else None
+
+    code = context.user_data.get('new_code')
+    code_type = context.user_data.get('code_type')
+    value = context.user_data.get('code_value')
+    max_uses = context.user_data.get('code_max_uses')
+
+    discount_codes.create_code(code, code_type, value, max_uses, expires_at)
+    context.user_data.clear()
+
+    value_label = f"{value:g}٪" if code_type == "percent" else f"{int(value):,} تومان"
+    await update.message.reply_text(
+        f"✅ کد تخفیف «{code}» ساخته شد ({value_label}).\nبرای مدیریت کدها از /codes استفاده کنید.",
+        reply_markup=home_button_keyboard(),
+    )
+    return ConversationHandler.END
+
+
+@admin_only
+async def codes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش لیست تمام کدهای تخفیف، هر کدام با دکمه فعال/غیرفعال و حذف"""
+    if update.callback_query:
+        await update.callback_query.answer()
+    chat_id = update.effective_chat.id
+
+    codes = discount_codes.list_codes()
+    if not codes:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="📭 هنوز هیچ کد تخفیفی ساخته نشده. با /addcode یکی بسازید.",
+            reply_markup=home_button_keyboard(),
+        )
+        return
+
+    for code, entry in codes.items():
+        text = discount_codes.format_summary(code, entry)
+        toggle_label = "⏸ غیرفعال کن" if entry.get("active", True) else "▶️ فعال کن"
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(toggle_label, callback_data=f"togglecode_{code}"),
+            InlineKeyboardButton("🗑 حذف", callback_data=f"delcode_{code}"),
+        ]])
+        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
+
+    await context.bot.send_message(chat_id=chat_id, text="👆 لیست کدهای تخفیف", reply_markup=home_button_keyboard())
+
+
+async def handle_discount_code_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دکمه‌های فعال/غیرفعال و حذف زیر هر کد تخفیف در لیست /codes"""
+    query = update.callback_query
+    await query.answer()
+
+    if query.from_user.id != Config.ADMIN_ID:
+        await query.answer("⛔️ فقط ادمین می‌تواند این کار را انجام دهد.", show_alert=True)
+        return
+
+    action, code = query.data.split("_", 1)
+
+    if action == "delcode":
+        ok = discount_codes.delete_code(code)
+        suffix = "\n\n🗑 حذف شد." if ok else "\n\n⚠️ این کد دیگر یافت نشد (شاید قبلاً حذف شده)."
+        await query.edit_message_text(query.message.text + suffix)
+        return
+
+    if action == "togglecode":
+        entry = discount_codes.get_code(code)
+        if not entry:
+            await query.edit_message_text(query.message.text + "\n\n⚠️ این کد دیگر یافت نشد.")
+            return
+        new_active = not entry.get("active", True)
+        discount_codes.set_active(code, new_active)
+        status_label = "فعال" if new_active else "غیرفعال"
+        await query.edit_message_text(query.message.text + f"\n\n✅ وضعیت به «{status_label}» تغییر کرد.")
+
+
+# ==================================================================
 #                  بک‌آپ‌گیری و بازیابی (فقط ادمین)
 # ==================================================================
 RESTORE_WAIT_FILE, RESTORE_CONFIRM = range(300, 302)
@@ -1070,10 +1366,15 @@ async def pending_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for request_id, req in items:
         age_hours = (time.time() - req.get("created_at", 0)) / 3600
+        discount_line = (
+            f"🏷 کد تخفیف: {req.get('discount_code')} (-{_format_toman(req.get('discount_amount', 0))})\n"
+            if req.get("discount_code") else ""
+        )
         text = (
             "🧾 درخواست در انتظار\n\n"
             f"👤 یوزرنیم: {req['username']}\n"
             f"📅 پروفایل: {req['profile']}\n"
+            f"{discount_line}"
             f"💰 مبلغ: {req.get('price') or 'نامشخص'}\n"
             f"💬 مشتری: {req.get('telegram_display')} (ID: {req['telegram_user_id']})\n"
             f"⏱ سن درخواست: {age_hours:.1f} ساعت"
@@ -1158,6 +1459,8 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
             customer_accounts.record_purchase(
                 req["telegram_user_id"], req["username"], req["profile"], shared_users
             )
+            if req.get("discount_code"):
+                discount_codes.record_usage(req["discount_code"])
 
             await _append_status_to_message(query, "\n\n✅ تایید شد و اکانت ساخته شد.")
 
@@ -1308,6 +1611,15 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, addvpn_get_extra_users),
                 CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
             ],
+            ADD_DISCOUNT_ASK: [
+                CallbackQueryHandler(discount_ask_callback, pattern="^discount_(yes|no)$"),
+                CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
+            ],
+            ADD_DISCOUNT_CODE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, addvpn_get_discount_code),
+                CallbackQueryHandler(discount_ask_callback, pattern="^discount_no$"),
+                CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
+            ],
             ADD_RECEIPT: [
                 MessageHandler(filters.PHOTO, addvpn_get_receipt),
                 CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
@@ -1375,12 +1687,43 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    addcode_conv = ConversationHandler(
+        entry_points=[CommandHandler("addcode", addcode_start)],
+        states={
+            ADDCODE_CODE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, addcode_get_code),
+                CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
+            ],
+            ADDCODE_TYPE: [
+                CallbackQueryHandler(addcode_get_type, pattern="^ctype_(percent|fixed)$"),
+                CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
+            ],
+            ADDCODE_VALUE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, addcode_get_value),
+                CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
+            ],
+            ADDCODE_MAXUSES: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, addcode_get_maxuses),
+                CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
+            ],
+            ADDCODE_EXPIRY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, addcode_get_expiry),
+                CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(add_conv)
     application.add_handler(del_conv)
     application.add_handler(settings_conv)
     application.add_handler(restore_conv)
     application.add_handler(setovpn_conv)
+    application.add_handler(addcode_conv)
+    application.add_handler(CommandHandler("codes", codes_list))
+    application.add_handler(CallbackQueryHandler(codes_list, pattern=f"^{MENU_DISCOUNTS_CB}$"))
+    application.add_handler(CallbackQueryHandler(handle_discount_code_admin_action, pattern="^(delcode|togglecode)_"))
     application.add_handler(CommandHandler("listvpn", listvpn))
     application.add_handler(CommandHandler("pending", pending_list))
     application.add_handler(CommandHandler("stats", stats_command))

@@ -13,12 +13,15 @@ backup.py
 
 فرمت فایل بک‌آپ:
 {
-    "version": 2,
+    "version": 3,
     "created_at": <unix timestamp>,
     "data": {
         "settings": {...},
         "pending_requests": {...},
-        "rate_limit": {...}
+        "rate_limit": {...},
+        "customer_accounts": {...},
+        "bot_users": {...},
+        "discount_codes": {...}
     },
     "files": {
         "ovpn_config": {"filename": "vpn_client.ovpn", "content_b64": "..."}
@@ -40,6 +43,7 @@ STORE_FILES = {
     "rate_limit": "rate_limit_store.json",
     "customer_accounts": "customer_accounts_store.json",
     "bot_users": "bot_users_store.json",
+    "discount_codes": "discount_codes_store.json",
 }
 
 # فایل‌های باینری/متنی که عیناً (نه به‌صورت JSON) باید در بک‌آپ باشند
@@ -47,7 +51,7 @@ BINARY_FILES = {
     "ovpn_config": "vpn_client.ovpn",
 }
 
-BACKUP_VERSION = 2
+BACKUP_VERSION = 3
 
 
 def create_backup_bytes() -> bytes:
