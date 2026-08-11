@@ -18,6 +18,7 @@ import html
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+from telegram.error import Forbidden, BadRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -52,6 +53,9 @@ DEL_USERNAME = 100
 # استیت‌های مکالمه ساخت کد تخفیف جدید (/addcode)
 ADDCODE_CODE, ADDCODE_TYPE, ADDCODE_VALUE, ADDCODE_MAXUSES, ADDCODE_EXPIRY = range(400, 405)
 
+# استیت‌های مکالمه پیام همگانی (/broadcast)
+BROADCAST_CONTENT, BROADCAST_CONFIRM = range(500, 502)
+
 # فقط حروف انگلیسی، عدد، نقطه، خط تیره و آندرلاین؛ طول ۳ تا ۳۲ کاراکتر
 _USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{3,32}$")
 
@@ -66,6 +70,7 @@ MENU_TUTORIAL_CB = "menu_tutorial"
 MENU_MY_ACCOUNTS_CB = "menu_my_accounts"
 MENU_STATS_CB = "menu_stats"
 MENU_DISCOUNTS_CB = "menu_discounts"
+MENU_BROADCAST_CB = "menu_broadcast"
 TUTORIAL_L2TP_CB = "tut_l2tp"
 TUTORIAL_OVPN_CB = "tut_ovpn"
 
@@ -92,6 +97,7 @@ def main_menu_keyboard(admin: bool) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("⚙️ مدیریت ربات", callback_data=MENU_MANAGE_CB),
             ],
             [InlineKeyboardButton("🏷 کدهای تخفیف", callback_data=MENU_DISCOUNTS_CB)],
+            [InlineKeyboardButton("📣 پیام همگانی", callback_data=MENU_BROADCAST_CB)],
         ]
     else:
         rows = [
@@ -223,6 +229,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/pending - لیست درخواست‌های در انتظار تایید\n"
             "/addcode - ساخت کد تخفیف جدید\n"
             "/codes - لیست و مدیریت کدهای تخفیف\n"
+            "/broadcast - ارسال پیام همگانی به همه کاربران ربات\n"
             "/settings - پنل مدیریت کامل تنظیمات ربات\n"
             "/backup - دریافت فوری فایل بک‌آپ\n"
             "/restore - بازیابی از فایل بک‌آپ\n"
@@ -236,6 +243,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             "🤖 سلام به ربات 24H-shop خوش آمدید\n"
             "با این ربات می‌تونید یوزر VPN (OpenVPN / L2TP) بخرید.\n\n"
+            "از دکمه زیر استفاده کنید، یا /addvpn را بزنید.\n"
+            "/tutorial - آموزش اتصال L2TP/OpenVPN\n"
+            "/myaccounts - اکانت‌های VPN که خریداری کرده‌اید\n"
+            "/cancel - لغو عملیات جاری"
         )
 
     # ثبت کاربر جدید و اطلاع‌رسانی فوری به ادمین (فقط اگر خود ادمین نباشد)
@@ -1177,6 +1188,98 @@ async def handle_discount_code_admin_action(update: Update, context: ContextType
 
 
 # ==================================================================
+#                  پیام همگانی به همه کاربران (فقط ادمین)
+#   /broadcast: ادمین هر نوع پیامی (متن، عکس، ویدیو و ...) که بفرسته
+#   دقیقاً همون رو (با copy_message) برای همه کاربرانی که تا الان
+#   /start زده‌اند ارسال می‌کند. قبل از ارسال، یک پیش‌نمایش + تایید نهایی داره.
+# ==================================================================
+@admin_only
+async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await _reply(
+        update, context,
+        "📣 پیامی که می‌خواهید برای همه کاربران ربات ارسال شود را بفرستید\n"
+        "(متن، عکس، ویدیو یا هر نوع پیام دیگر — دقیقاً همین‌طور که بفرستید برای همه ارسال می‌شود):",
+        reply_markup=CANCEL_INLINE_KEYBOARD,
+    )
+    return BROADCAST_CONTENT
+
+
+async def broadcast_get_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ذخیره‌ی مشخصات پیام نمونه (chat_id + message_id) برای کپی بعدی به همه کاربران"""
+    context.user_data['broadcast_source_chat_id'] = update.effective_chat.id
+    context.user_data['broadcast_source_message_id'] = update.message.message_id
+
+    total_users = len(bot_users.get_all_user_ids())
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"✅ ارسال به {total_users} کاربر", callback_data="broadcast_send")],
+        [InlineKeyboardButton("🚫 لغو", callback_data="broadcast_cancel")],
+    ])
+    await update.message.reply_text(
+        f"👆 این پیام دقیقاً همین‌طور برای {total_users} کاربری که تا الان /start زده‌اند ارسال می‌شود.\n"
+        "مطمئن هستید؟",
+        reply_markup=keyboard,
+    )
+    return BROADCAST_CONFIRM
+
+
+async def broadcast_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "broadcast_cancel":
+        context.user_data.clear()
+        await query.edit_message_text("❎ پیام همگانی لغو شد.")
+        return ConversationHandler.END
+
+    source_chat_id = context.user_data.get('broadcast_source_chat_id')
+    source_message_id = context.user_data.get('broadcast_source_message_id')
+    context.user_data.clear()
+
+    if not source_chat_id or not source_message_id:
+        await query.edit_message_text("⚠️ اطلاعات پیام از بین رفته. لطفاً دوباره با /broadcast شروع کنید.")
+        return ConversationHandler.END
+
+    user_ids = [uid for uid in bot_users.get_all_user_ids() if uid != Config.ADMIN_ID]
+    await query.edit_message_text(f"⏳ در حال ارسال به {len(user_ids)} کاربر... این ممکن است کمی طول بکشد.")
+
+    success_count = 0
+    blocked_count = 0
+    failed_count = 0
+
+    for uid in user_ids:
+        try:
+            await context.bot.copy_message(
+                chat_id=uid,
+                from_chat_id=source_chat_id,
+                message_id=source_message_id,
+            )
+            success_count += 1
+        except Forbidden:
+            # کاربر ربات را بلاک کرده یا حساب را حذف کرده
+            blocked_count += 1
+        except BadRequest as e:
+            logger.warning(f"Broadcast failed for user {uid}: {e}")
+            failed_count += 1
+        except Exception as e:
+            logger.warning(f"Broadcast unexpected error for user {uid}: {e}")
+            failed_count += 1
+
+        # فاصله کوچک بین ارسال‌ها برای رعایت محدودیت نرخ ارسال تلگرام
+        await asyncio.sleep(0.05)
+
+    summary = (
+        "📣 نتیجه ارسال پیام همگانی\n\n"
+        f"✅ ارسال موفق: {success_count}\n"
+        f"🚫 بلاک‌شده توسط کاربر: {blocked_count}\n"
+        f"❗️ سایر خطاها: {failed_count}\n"
+        f"👥 مجموع کاربران هدف: {len(user_ids)}"
+    )
+    await context.bot.send_message(chat_id=source_chat_id, text=summary, reply_markup=home_button_keyboard())
+    return ConversationHandler.END
+
+
+# ==================================================================
 #                  بک‌آپ‌گیری و بازیابی (فقط ادمین)
 # ==================================================================
 RESTORE_WAIT_FILE, RESTORE_CONFIRM = range(300, 302)
@@ -1714,6 +1817,23 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    broadcast_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("broadcast", broadcast_start),
+            CallbackQueryHandler(broadcast_start, pattern=f"^{MENU_BROADCAST_CB}$"),
+        ],
+        states={
+            BROADCAST_CONTENT: [
+                MessageHandler(filters.ALL & ~filters.COMMAND, broadcast_get_content),
+                CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
+            ],
+            BROADCAST_CONFIRM: [
+                CallbackQueryHandler(broadcast_confirm_callback, pattern="^broadcast_(send|cancel)$"),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(add_conv)
     application.add_handler(del_conv)
@@ -1721,6 +1841,7 @@ def main():
     application.add_handler(restore_conv)
     application.add_handler(setovpn_conv)
     application.add_handler(addcode_conv)
+    application.add_handler(broadcast_conv)
     application.add_handler(CommandHandler("codes", codes_list))
     application.add_handler(CallbackQueryHandler(codes_list, pattern=f"^{MENU_DISCOUNTS_CB}$"))
     application.add_handler(CallbackQueryHandler(handle_discount_code_admin_action, pattern="^(delcode|togglecode)_"))

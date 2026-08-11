@@ -62,3 +62,10 @@ def get_recent(limit: int = 10) -> list:
         items = [(int(uid), entry) for uid, entry in data.items()]
         items.sort(key=lambda x: x[1].get("first_seen", 0), reverse=True)
         return items[:limit]
+
+
+def get_all_user_ids() -> list:
+    """همه‌ی شناسه‌های کاربری ثبت‌شده؛ برای پیام همگانی (/broadcast) استفاده می‌شود"""
+    with _LOCK:
+        data = _load()
+        return [int(uid) for uid in data.keys()]
