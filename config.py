@@ -53,6 +53,12 @@ _ENV_DEFAULTS = {
     "BACKUP_AUTO_ENABLED": os.getenv("BACKUP_AUTO_ENABLED", "true"),
     "BACKUP_INTERVAL_HOURS": os.getenv("BACKUP_INTERVAL_HOURS", "24"),
 
+    # کد تخفیف خودکاری که برای هر کاربر تازه‌وارد (بعد از اولین /start) ساخته و ارسال می‌شود
+    "WELCOME_DISCOUNT_ENABLED": os.getenv("WELCOME_DISCOUNT_ENABLED", "true"),
+    "WELCOME_DISCOUNT_TYPE": os.getenv("WELCOME_DISCOUNT_TYPE", "percent"),  # percent یا fixed
+    "WELCOME_DISCOUNT_VALUE": os.getenv("WELCOME_DISCOUNT_VALUE", "10"),
+    "WELCOME_DISCOUNT_EXPIRY_DAYS": os.getenv("WELCOME_DISCOUNT_EXPIRY_DAYS", "7"),  # 0 = بدون انقضا
+
     "TUTORIAL_L2TP": os.getenv("TUTORIAL_L2TP", (
         "📱 آموزش اتصال L2TP\n\n"
         "۱. به تنظیمات VPN دستگاه خود بروید (Settings > VPN > Add VPN).\n"
@@ -73,9 +79,9 @@ _ENV_DEFAULTS = {
 }
 
 # نوع هر فیلد، برای تبدیل درست مقدار وقتی خوانده می‌شود
-_FLOAT_KEYS = {"SELF_SERVICE_COOLDOWN_HOURS", "PENDING_REQUEST_TIMEOUT_HOURS", "BACKUP_INTERVAL_HOURS"}
-_INT_KEYS = {"MIKROTIK_PORT", "MAX_EXTRA_USERS"}
-_BOOL_KEYS = {"MIKROTIK_USE_SSL", "BACKUP_AUTO_ENABLED"}
+_FLOAT_KEYS = {"SELF_SERVICE_COOLDOWN_HOURS", "PENDING_REQUEST_TIMEOUT_HOURS", "BACKUP_INTERVAL_HOURS", "WELCOME_DISCOUNT_VALUE"}
+_INT_KEYS = {"MIKROTIK_PORT", "MAX_EXTRA_USERS", "WELCOME_DISCOUNT_EXPIRY_DAYS"}
+_BOOL_KEYS = {"MIKROTIK_USE_SSL", "BACKUP_AUTO_ENABLED", "WELCOME_DISCOUNT_ENABLED"}
 
 
 class _ConfigMeta(type):

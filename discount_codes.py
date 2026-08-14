@@ -28,6 +28,8 @@ import json
 import os
 import time
 import threading
+import random
+import string
 from datetime import datetime
 
 _LOCK = threading.Lock()
@@ -51,6 +53,28 @@ def _save(data: dict):
 
 def _normalize(code: str) -> str:
     return (code or "").strip().upper()
+
+
+def _generate_unique_code(prefix: str = "WELCOME", length: int = 6) -> str:
+    """ساخت یک کد تصادفی که با هیچ کد موجودی برخورد نداشته باشد (برای کدهای خودکار خوش‌آمد)"""
+    chars = string.ascii_uppercase + string.digits
+    for _ in range(20):  # عملاً هرگز به این تعداد تلاش نیاز نمی‌شود
+        candidate = prefix + "".join(random.choices(chars, k=length))
+        if not get_code(candidate):
+            return candidate
+    # اگر خیلی بدشانس بودیم، طول را افزایش می‌دهیم تا برخورد غیرممکن شود
+    return prefix + "".join(random.choices(chars, k=length + 4))
+
+
+def create_welcome_code(discount_type: str, value: float, expires_at: float = None) -> str:
+    """
+    ساخت یک کد تخفیف یک‌بارمصرف اختصاصی برای یک کاربر تازه‌وارد (هدیه خوش‌آمدگویی).
+    همیشه max_uses=1 است تا فقط اولین خرید همان کاربر از آن استفاده کند.
+    کد ساخته‌شده را برمی‌گرداند.
+    """
+    code = _generate_unique_code()
+    create_code(code, discount_type, value, max_uses=1, expires_at=expires_at)
+    return code
 
 
 def create_code(code: str, type_: str, value: float, max_uses: int = None, expires_at: float = None) -> str:

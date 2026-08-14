@@ -250,6 +250,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     # ثبت کاربر جدید و اطلاع‌رسانی فوری به ادمین (فقط اگر خود ادمین نباشد)
+    welcome_info = None  # (code, value_label, expiry_label) در صورت ساخته‌شدن کد خوش‌آمد
     if requester is not None:
         display_name = f"@{requester.username}" if requester.username else requester.full_name
         is_new_user = bot_users.register_and_check_new(user_id, display_name)
@@ -268,6 +269,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 logger.exception("Failed to notify admin about new user")
 
+            # ساخت خودکار یک کد تخفیف یک‌بارمصرف مخصوص همین کاربر (در صورت فعال بودن از /settings)
+            if Config.WELCOME_DISCOUNT_ENABLED:
+                try:
+                    discount_type = str(Config.WELCOME_DISCOUNT_TYPE).strip().lower()
+                    if discount_type not in ("percent", "fixed"):
+                        discount_type = "percent"
+                    discount_value = Config.WELCOME_DISCOUNT_VALUE
+                    expiry_days = Config.WELCOME_DISCOUNT_EXPIRY_DAYS
+
+                    expires_at = (time.time() + expiry_days * 86400) if expiry_days > 0 else None
+                    welcome_code = discount_codes.create_welcome_code(discount_type, discount_value, expires_at)
+
+                    value_label = f"{discount_value:g}٪" if discount_type == "percent" else f"{int(discount_value):,} تومان"
+                    expiry_label = f"⏱ اعتبار: تا {expiry_days} روز آینده\n" if expiry_days > 0 else ""
+                    welcome_info = (welcome_code, value_label, expiry_label)
+                except Exception:
+                    logger.exception("Failed to create welcome discount code for new user")
+
     # حذف صریح هر کیبورد ثابت (Reply Keyboard) قدیمی که ممکن است از نسخه‌های قبلی
     # ربات هنوز روی صفحه کاربر باقی مانده باشد. پیام موقت را بلافاصله بعد پاک می‌کنیم
     # تا هیچ اثری در چت باقی نماند.
@@ -278,6 +297,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass  # اگر حذف ممکن نبود (مثلاً محدودیت زمانی تلگرام)، بی‌ضرر است
 
     await update.message.reply_text(text, reply_markup=main_menu_keyboard(is_admin(user_id)))
+
+    if welcome_info:
+        welcome_code, value_label, expiry_label = welcome_info
+        await update.message.reply_text(
+            "🎁 هدیه خوش‌آمدگویی!\n\n"
+            "به‌عنوان کاربر جدید، این کد تخفیف اختصاصی فقط برای اولین خرید شماست:\n\n"
+            f"`{welcome_code}`\n\n"
+            f"💸 مقدار تخفیف: {value_label}\n"
+            f"{expiry_label}"
+            "این کد فقط یک‌بار قابل استفاده است. موقع خرید با /addvpn، وقتی ازتان کد تخفیف پرسیده شد همین را وارد کنید.",
+            parse_mode="Markdown",
+        )
 
 
 # ---------------------- دکمه پشتیبانی (منوی دائمی) ----------------------
@@ -836,6 +867,10 @@ SETTINGS_FIELDS = {
     "BACKUP_INTERVAL_HOURS": ("💾 فاصله بک‌آپ خودکار (ساعت)", "float", False),
     "TUTORIAL_L2TP": ("📱 متن آموزش اتصال L2TP", "str", False),
     "TUTORIAL_OVPN": ("🔐 متن آموزش اتصال OpenVPN", "str", False),
+    "WELCOME_DISCOUNT_ENABLED": ("🎁 فعال بودن کد تخفیف خوش‌آمد کاربر جدید", "bool", False),
+    "WELCOME_DISCOUNT_TYPE": ("🎁 نوع تخفیف خوش‌آمد (percent یا fixed)", "str", False),
+    "WELCOME_DISCOUNT_VALUE": ("🎁 مقدار تخفیف خوش‌آمد", "float", False),
+    "WELCOME_DISCOUNT_EXPIRY_DAYS": ("🎁 اعتبار کد خوش‌آمد (روز، 0=بدون انقضا)", "int", False),
 }
 
 
