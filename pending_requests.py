@@ -38,12 +38,17 @@ def _save(data: dict):
 
 def create_request(username: str, password: str, profile: str, price: str,
                     telegram_user_id: int, telegram_display: str, chat_id: int,
-                    extra_users: int = 0, discount_code: str = None, discount_amount: int = 0) -> str:
+                    extra_users: int = 0, discount_code: str = None, discount_amount: int = 0,
+                    request_type: str = "new") -> str:
     """ساخت یک درخواست جدید در انتظار تایید؛ شناسه کوتاه آن را برمی‌گرداند.
 
     discount_code/discount_amount اختیاری‌اند: اگر مشتری کد تخفیف معتبری وارد
     کرده باشد، اینجا ذخیره می‌شود تا بعد از تایید نهایی ادمین، مصرف آن کد
-    یک‌بار ثبت شود (discount_codes.record_usage)."""
+    یک‌بار ثبت شود (discount_codes.record_usage).
+
+    request_type یکی از "new" (ساخت یوزر جدید، پیش‌فرض) یا "renew" (تمدید
+    یوزر موجود) است؛ روی نحوه‌ی پردازش تایید ادمین در handle_admin_decision
+    تاثیر می‌گذارد."""
     with _LOCK:
         data = _load()
         request_id = uuid.uuid4().hex[:10]
@@ -58,6 +63,7 @@ def create_request(username: str, password: str, profile: str, price: str,
             "extra_users": extra_users,
             "discount_code": discount_code,
             "discount_amount": discount_amount,
+            "type": request_type,
             "status": "pending",
             "created_at": time.time(),
         }

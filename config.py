@@ -59,6 +59,13 @@ _ENV_DEFAULTS = {
     "WELCOME_DISCOUNT_VALUE": os.getenv("WELCOME_DISCOUNT_VALUE", "10"),
     "WELCOME_DISCOUNT_EXPIRY_DAYS": os.getenv("WELCOME_DISCOUNT_EXPIRY_DAYS", "7"),  # 0 = بدون انقضا
 
+    # متن خوش‌آمدگویی که مشتریان عادی (غیر ادمین) با /start می‌بینند؛ لیست دستورات
+    # زیرش همیشه ثابت و خودکار اضافه می‌شود، فقط همین بخش بالایی قابل تغییر است.
+    "WELCOME_MESSAGE": os.getenv("WELCOME_MESSAGE", (
+        "🤖 سلام به ربات 24H-shop خوش آمدید\n"
+        "با این ربات می‌تونید یوزر VPN (OpenVPN / L2TP) بخرید."
+    )),
+
     "TUTORIAL_L2TP": os.getenv("TUTORIAL_L2TP", (
         "📱 آموزش اتصال L2TP\n\n"
         "۱. به تنظیمات VPN دستگاه خود بروید (Settings > VPN > Add VPN).\n"

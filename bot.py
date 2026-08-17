@@ -56,11 +56,15 @@ ADDCODE_CODE, ADDCODE_TYPE, ADDCODE_VALUE, ADDCODE_MAXUSES, ADDCODE_EXPIRY = ran
 # استیت‌های مکالمه پیام همگانی (/broadcast)
 BROADCAST_CONTENT, BROADCAST_CONFIRM = range(500, 502)
 
+# استیت‌های مکالمه تمدید سرویس (/renew)
+RENEW_ACCOUNT, RENEW_PROFILE, RENEW_DISCOUNT_ASK, RENEW_DISCOUNT_CODE, RENEW_RECEIPT = range(600, 605)
+
 # فقط حروف انگلیسی، عدد، نقطه، خط تیره و آندرلاین؛ طول ۳ تا ۳۲ کاراکتر
 _USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{3,32}$")
 
 # ---------------------- دکمه‌های منوی اصلی (Inline - زیر خود پیام در چت) ----------------------
 MENU_BUY_CB = "menu_buy"
+MENU_RENEW_CB = "menu_renew"
 MENU_LIST_CB = "menu_list"
 MENU_DELETE_CB = "menu_delete"
 MENU_SUPPORT_CB = "menu_support"
@@ -83,6 +87,7 @@ def main_menu_keyboard(admin: bool) -> InlineKeyboardMarkup:
     if admin:
         rows = [
             [InlineKeyboardButton("🛒 خرید VPN جدید", callback_data=MENU_BUY_CB)],
+            [InlineKeyboardButton("🔄 تمدید سرویس", callback_data=MENU_RENEW_CB)],
             [
                 InlineKeyboardButton("📋 لیست یوزرها", callback_data=MENU_LIST_CB),
                 InlineKeyboardButton("🗑 حذف یوزر", callback_data=MENU_DELETE_CB),
@@ -102,6 +107,7 @@ def main_menu_keyboard(admin: bool) -> InlineKeyboardMarkup:
     else:
         rows = [
             [InlineKeyboardButton("🛒 خرید VPN جدید", callback_data=MENU_BUY_CB)],
+            [InlineKeyboardButton("🔄 تمدید سرویس", callback_data=MENU_RENEW_CB)],
             [
                 InlineKeyboardButton("🧩 آموزش اتصال", callback_data=MENU_TUTORIAL_CB),
                 InlineKeyboardButton("📦 اکانت‌های من", callback_data=MENU_MY_ACCOUNTS_CB),
@@ -224,6 +230,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🤖 ربات مدیریت VPN میکروتیک (OpenVPN / L2TP - User Manager)\n\n"
             "از دکمه‌های زیر استفاده کنید، یا دستورات را مستقیم بزنید:\n"
             "/addvpn - ساخت یوزر جدید (بدون پرداخت)\n"
+            "/renew - تمدید یک یوزر موجود (بدون پرداخت)\n"
             "/delvpn - حذف یک یوزر\n"
             "/listvpn - نمایش لیست یوزرهای موجود\n"
             "/pending - لیست درخواست‌های در انتظار تایید\n"
@@ -240,14 +247,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/cancel - لغو عملیات جاری"
         )
     else:
-        text = (
-            "🤖 سلام به ربات 24H-shop خوش آمدید\n"
-            "با این ربات می‌تونید یوزر VPN (OpenVPN / L2TP) بخرید.\n\n"
-            "از دکمه زیر استفاده کنید، یا /addvpn را بزنید.\n"
-            "/tutorial - آموزش اتصال L2TP/OpenVPN\n"
-            "/myaccounts - اکانت‌های VPN که خریداری کرده‌اید\n"
-            "/cancel - لغو عملیات جاری"
-        )
+        text = Config.WELCOME_MESSAGE
 
     # ثبت کاربر جدید و اطلاع‌رسانی فوری به ادمین (فقط اگر خود ادمین نباشد)
     welcome_info = None  # (code, value_label, expiry_label) در صورت ساخته‌شدن کد خوش‌آمد
@@ -710,25 +710,37 @@ async def _send_payment_screen(chat_id: int, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
-async def discount_ask_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پاسخ به سوال «کد تخفیف دارید؟»؛ هم از مرحله انتخاب اولیه و هم از مرحله رد یک کد نامعتبر صدا زده می‌شود"""
+async def _discount_ask_core(update: Update, context: ContextTypes.DEFAULT_TYPE, code_state: int, receipt_state: int):
+    """
+    هسته‌ی مشترک پاسخ به سوال «کد تخفیف دارید؟» که هم در فلوی /addvpn و هم /renew
+    استفاده می‌شود؛ فقط استیت بعدی (کدام ConversationHandler) از بیرون داده می‌شود.
+    """
     query = update.callback_query
     await query.answer()
 
     if query.data == "discount_yes":
         await query.edit_message_text("🏷 کد تخفیف را وارد کنید:", reply_markup=CANCEL_INLINE_KEYBOARD)
-        return ADD_DISCOUNT_CODE
+        return code_state
 
     # discount_no: بدون کد تخفیف ادامه بده
     context.user_data['discount_code'] = None
     context.user_data['discount_amount'] = 0
     await query.edit_message_text("➡️ بدون کد تخفیف ادامه می‌دهیم.")
     await _send_payment_screen(query.message.chat.id, context)
-    return ADD_RECEIPT
+    return receipt_state
 
 
-async def addvpn_get_discount_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دریافت متنی کد تخفیف از کاربر، اعتبارسنجی و اعمال آن روی مبلغ نهایی"""
+async def discount_ask_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """پاسخ به سوال «کد تخفیف دارید؟» در فلوی خرید (/addvpn)"""
+    return await _discount_ask_core(update, context, ADD_DISCOUNT_CODE, ADD_RECEIPT)
+
+
+async def _apply_discount_code_core(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    اعتبارسنجی متن کد تخفیف وارد‌شده و اعمال آن روی context.user_data.
+    خروجی True یعنی موفق (آماده رفتن به مرحله رسید)، False یعنی باید همین
+    استیت را نگه داشت و دوباره از کاربر کد بخواهد (پیام خطا خودش همینجا ارسال می‌شود).
+    """
     code_raw = update.message.text.strip()
     ok, reason, entry = discount_codes.validate(code_raw)
 
@@ -741,7 +753,7 @@ async def addvpn_get_discount_code(update: Update, context: ContextTypes.DEFAULT
             f"❗️ {reason}\nکد دیگری وارد کنید یا بدون تخفیف ادامه دهید:",
             reply_markup=keyboard,
         )
-        return ADD_DISCOUNT_CODE
+        return False
 
     subtotal = _parse_price_to_number(context.user_data.get('price')) + \
         _parse_price_to_number(context.user_data.get('extra_price')) * context.user_data.get('extra_users', 0)
@@ -753,7 +765,13 @@ async def addvpn_get_discount_code(update: Update, context: ContextTypes.DEFAULT
 
     await update.message.reply_text(f"✅ کد «{normalized_code}» اعمال شد: {_format_toman(discount_amount)} تخفیف.")
     await _send_payment_screen(update.effective_chat.id, context)
-    return ADD_RECEIPT
+    return True
+
+
+async def addvpn_get_discount_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت متنی کد تخفیف از کاربر در فلوی خرید (/addvpn)"""
+    applied = await _apply_discount_code_core(update, context)
+    return ADD_RECEIPT if applied else ADD_DISCOUNT_CODE
 
 
 async def addvpn_get_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -837,7 +855,225 @@ async def addvpn_get_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ==================================================================
-#              پنل مدیریت کامل ادمین (/settings یا دکمه منو)
+#                        /renew Conversation
+#   برای مشتری‌ها: تمدید یکی از اکانت‌های VPN موجودشان. یوزرنیم/پسورد
+#   دست‌نخورده می‌ماند، فقط یک دوره اعتبار جدید روی همان یوزر اضافه
+#   می‌شود. مسیر پرداخت دقیقاً مثل /addvpn (کارت‌به‌کارت + تایید ادمین)
+#   است و همان توابع کمکی کد تخفیف/صفحه پرداخت دوباره استفاده می‌شوند.
+#   خود ادمین می‌تواند از همینجا هر یوزری را بدون پرداخت تمدید کند.
+# ==================================================================
+async def renew_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not is_admin(user_id):
+        if pending_requests.has_pending_for_user(user_id, Config.PENDING_REQUEST_TIMEOUT_HOURS):
+            await _reply(
+                update, context,
+                "⏳ شما یک درخواست در انتظار تایید ادمین دارید.\n"
+                "لطفاً منتظر بررسی رسید قبلی بمانید.",
+                reply_markup=home_button_keyboard(),
+            )
+            return ConversationHandler.END
+
+    context.user_data.clear()
+
+    purchases = customer_accounts.get_purchases(user_id)
+    if not purchases:
+        await _reply(
+            update, context,
+            "📭 شما هنوز هیچ اکانت VPN‌ای از این ربات نخریده‌اید که بخواهید تمدید کنید.\n"
+            "با /addvpn یک اکانت جدید بسازید.",
+            reply_markup=home_button_keyboard(),
+        )
+        return ConversationHandler.END
+
+    # اگر چند بار با یک یوزرنیم خرید ثبت شده باشد، فقط یک‌بار در لیست نشان می‌دهیم
+    unique_by_name = {}
+    for p in purchases:
+        unique_by_name[p['username']] = p
+    usernames = list(unique_by_name.keys())
+
+    keyboard = [
+        [InlineKeyboardButton(f"👤 {name}", callback_data=f"renewacc_{name}")]
+        for name in usernames
+    ]
+    keyboard.append([InlineKeyboardButton("🚫 لغو", callback_data="flow_cancel")])
+
+    await _reply(
+        update, context,
+        "🔄 کدام اکانت را می‌خواهید تمدید کنید؟",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return RENEW_ACCOUNT
+
+
+async def renew_select_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    username = query.data.split("_", 1)[1]
+    context.user_data['renew_username'] = username
+
+    price_1 = f" - {Config.PRICE_1_MONTH}" if Config.PRICE_1_MONTH else ""
+    price_2 = f" - {Config.PRICE_2_MONTH}" if Config.PRICE_2_MONTH else ""
+
+    keyboard = [
+        [InlineKeyboardButton(f"🟢 ۱ ماهه{price_1}", callback_data="rprofile_30d")],
+        [InlineKeyboardButton(f"🟢 ۲ ماهه{price_2}", callback_data="rprofile_60d")],
+        [InlineKeyboardButton("🚫 لغو", callback_data="flow_cancel")],
+    ]
+    await query.edit_message_text(
+        f"👤 اکانت انتخابی: {username}\n\n📅 مدت تمدید را انتخاب کنید:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return RENEW_PROFILE
+
+
+async def renew_select_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    profile_map = {
+        "rprofile_30d": (Config.PROFILE_1_MONTH, Config.PRICE_1_MONTH),
+        "rprofile_60d": (Config.PROFILE_2_MONTH, Config.PRICE_2_MONTH),
+    }
+    profile, price = profile_map.get(query.data, (None, ""))
+
+    context.user_data['profile'] = profile
+    context.user_data['price'] = price
+    context.user_data['extra_price'] = ""
+    context.user_data['extra_users'] = 0
+
+    requester = update.effective_user
+    username = context.user_data.get('renew_username')
+
+    # ---------------- مسیر ادمین: بدون پرداخت، تمدید فوری ----------------
+    if is_admin(requester.id):
+        await query.edit_message_text("⏳ در حال تمدید یوزر روی میکروتیک، لطفاً صبر کنید...")
+        try:
+            await asyncio.to_thread(mikrotik.renew_vpn_user, username, profile)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"✅ اکانت «{username}» با موفقیت تمدید شد (پروفایل جدید: {profile}).",
+                reply_markup=home_button_keyboard(),
+            )
+        except UserNotFoundError as e:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"⚠️ {e}", reply_markup=home_button_keyboard())
+        except MikrotikError as e:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ خطا: {e}", reply_markup=home_button_keyboard())
+        except Exception as e:
+            logger.exception("Unexpected error in admin renew flow")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text=f"❌ خطای غیرمنتظره: {e}", reply_markup=home_button_keyboard()
+            )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    # ---------------- مسیر مشتری: سوال کد تخفیف قبل از نمایش شماره کارت ----------------
+    if not Config.CARD_NUMBER:
+        await query.edit_message_text(
+            "❌ در حال حاضر امکان پرداخت فعال نیست. لطفاً بعداً یا از طریق پشتیبانی اقدام کنید."
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    context.user_data['discount_code'] = None
+    context.user_data['discount_amount'] = 0
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏷 کد تخفیف دارم", callback_data="discount_yes")],
+        [InlineKeyboardButton("➡️ ندارم، ادامه بده", callback_data="discount_no")],
+        [InlineKeyboardButton("🚫 لغو", callback_data="flow_cancel")],
+    ])
+    await query.edit_message_text("🏷 کد تخفیف دارید؟", reply_markup=keyboard)
+    return RENEW_DISCOUNT_ASK
+
+
+async def renew_discount_ask_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """پاسخ به سوال «کد تخفیف دارید؟» در فلوی تمدید (/renew)"""
+    return await _discount_ask_core(update, context, RENEW_DISCOUNT_CODE, RENEW_RECEIPT)
+
+
+async def renew_get_discount_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت متنی کد تخفیف از کاربر در فلوی تمدید (/renew)"""
+    applied = await _apply_discount_code_core(update, context)
+    return RENEW_RECEIPT if applied else RENEW_DISCOUNT_CODE
+
+
+async def renew_get_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.photo:
+        await update.message.reply_text(
+            "❗️ لطفاً رسید پرداخت را به‌صورت عکس ارسال کنید.",
+            reply_markup=CANCEL_INLINE_KEYBOARD,
+        )
+        return RENEW_RECEIPT
+
+    requester = update.effective_user
+    username = context.user_data.get('renew_username')
+    profile = context.user_data.get('profile')
+    discount_code = context.user_data.get('discount_code')
+
+    _, _, discount_amount, grand_total = _compute_totals(context)
+
+    photo_file_id = update.message.photo[-1].file_id
+
+    request_id = pending_requests.create_request(
+        username=username,
+        password="",  # تمدید یعنی یوزر و پسورد قبلی دست‌نخورده می‌مانند
+        profile=profile,
+        price=_format_toman(grand_total) if grand_total else context.user_data.get('price'),
+        telegram_user_id=requester.id,
+        telegram_display=(f"@{requester.username}" if requester.username else requester.full_name),
+        chat_id=update.effective_chat.id,
+        extra_users=0,
+        discount_code=discount_code,
+        discount_amount=discount_amount,
+        request_type="renew",
+    )
+
+    display_name = f"@{requester.username}" if requester.username else requester.full_name
+    admin_keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ تایید و تمدید اکانت", callback_data=f"approve_{request_id}"),
+            InlineKeyboardButton("❌ رد رسید", callback_data=f"reject_{request_id}"),
+        ]
+    ])
+
+    discount_caption_line = (
+        f"🏷 کد تخفیف: {html.escape(discount_code)} (-{_format_toman(discount_amount)})\n"
+        if discount_code else ""
+    )
+    caption = (
+        "🧾 رسید پرداخت تمدید سرویس\n\n"
+        f"👤 یوزرنیم: <code>{html.escape(username)}</code>\n"
+        f"📅 پروفایل جدید: {html.escape(profile)}\n"
+        f"{discount_caption_line}"
+        f"💰 مبلغ کل: {_format_toman(grand_total) if grand_total else 'نامشخص'}\n"
+        f"💬 مشتری: {html.escape(display_name)} (ID: {requester.id})"
+    )
+
+    try:
+        await context.bot.send_photo(
+            chat_id=Config.ADMIN_ID,
+            photo=photo_file_id,
+            caption=caption,
+            reply_markup=admin_keyboard,
+            parse_mode="HTML",
+        )
+    except Exception:
+        logger.exception("Failed to forward renewal receipt to admin")
+        await update.message.reply_text("❌ خطا در ارسال رسید به ادمین. لطفاً دوباره تلاش کنید یا با پشتیبانی تماس بگیرید.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    await update.message.reply_text(
+        "✅ رسید شما دریافت و برای بررسی به ادمین ارسال شد.\n"
+        "بعد از تایید، اکانت شما تمدید می‌شود و همینجا به شما اطلاع داده می‌شود.",
+        reply_markup=home_button_keyboard(),
+    )
+
+    context.user_data.clear()
+    return ConversationHandler.END
 #   همه متغیرهای قابل تنظیم ربات از اینجا قابل مشاهده و تغییرند،
 #   بدون نیاز به ورود به سرور و ویرایش دستی .env
 # ==================================================================
@@ -867,6 +1103,7 @@ SETTINGS_FIELDS = {
     "BACKUP_INTERVAL_HOURS": ("💾 فاصله بک‌آپ خودکار (ساعت)", "float", False),
     "TUTORIAL_L2TP": ("📱 متن آموزش اتصال L2TP", "str", False),
     "TUTORIAL_OVPN": ("🔐 متن آموزش اتصال OpenVPN", "str", False),
+    "WELCOME_MESSAGE": ("💬 متن خوش‌آمدگویی مشتری (/start)", "str", False),
     "WELCOME_DISCOUNT_ENABLED": ("🎁 فعال بودن کد تخفیف خوش‌آمد کاربر جدید", "bool", False),
     "WELCOME_DISCOUNT_TYPE": ("🎁 نوع تخفیف خوش‌آمد (percent یا fixed)", "str", False),
     "WELCOME_DISCOUNT_VALUE": ("🎁 مقدار تخفیف خوش‌آمد", "float", False),
@@ -1168,12 +1405,12 @@ async def addcode_get_expiry(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 @admin_only
 async def codes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش لیست تمام کدهای تخفیف، هر کدام با دکمه فعال/غیرفعال و حذف"""
+    """نمایش لیست کدهای تخفیفی که خود ادمین با /addcode ساخته (کدهای خودکار خوش‌آمدگویی اینجا نشان داده نمی‌شوند)"""
     if update.callback_query:
         await update.callback_query.answer()
     chat_id = update.effective_chat.id
 
-    codes = discount_codes.list_codes()
+    codes = discount_codes.list_codes(source="admin")
     if not codes:
         await context.bot.send_message(
             chat_id=chat_id,
@@ -1504,12 +1741,14 @@ async def pending_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for request_id, req in items:
         age_hours = (time.time() - req.get("created_at", 0)) / 3600
+        request_type = req.get("type", "new")
+        type_label = "🔄 تمدید سرویس" if request_type == "renew" else "🛒 خرید جدید"
         discount_line = (
             f"🏷 کد تخفیف: {req.get('discount_code')} (-{_format_toman(req.get('discount_amount', 0))})\n"
             if req.get("discount_code") else ""
         )
         text = (
-            "🧾 درخواست در انتظار\n\n"
+            f"🧾 درخواست در انتظار ({type_label})\n\n"
             f"👤 یوزرنیم: {req['username']}\n"
             f"📅 پروفایل: {req['profile']}\n"
             f"{discount_line}"
@@ -1517,9 +1756,10 @@ async def pending_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💬 مشتری: {req.get('telegram_display')} (ID: {req['telegram_user_id']})\n"
             f"⏱ سن درخواست: {age_hours:.1f} ساعت"
         )
+        approve_label = "✅ تایید و تمدید اکانت" if request_type == "renew" else "✅ تایید و ساخت اکانت"
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✅ تایید و ساخت اکانت", callback_data=f"approve_{request_id}"),
+                InlineKeyboardButton(approve_label, callback_data=f"approve_{request_id}"),
                 InlineKeyboardButton("❌ رد", callback_data=f"reject_{request_id}"),
             ],
             [InlineKeyboardButton("🚫 فقط لغو (بدون اطلاع رد)", callback_data=f"cancel_{request_id}")],
@@ -1586,6 +1826,37 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if action == "approve":
+        request_type = req.get("type", "new")
+
+        if request_type == "renew":
+            await _append_status_to_message(query, "\n\n⏳ در حال تمدید اکانت روی میکروتیک...")
+            try:
+                await asyncio.to_thread(mikrotik.renew_vpn_user, req["username"], req["profile"])
+                pending_requests.update_status(request_id, "approved")
+                if req.get("discount_code"):
+                    discount_codes.record_usage(req["discount_code"])
+
+                await _append_status_to_message(query, "\n\n✅ تایید شد و اکانت تمدید شد.")
+
+                await context.bot.send_message(
+                    chat_id=req["chat_id"],
+                    text=(
+                        f"✅ اکانت «{req['username']}» با موفقیت تمدید شد.\n"
+                        f"📅 پروفایل جدید: {req['profile']}\n\n"
+                        "یوزرنیم و رمز عبورتان تغییری نکرده است."
+                    ),
+                    reply_markup=home_button_keyboard(),
+                )
+            except UserNotFoundError as e:
+                await _append_status_to_message(query, f"\n\n⚠️ خطا: {e}")
+            except MikrotikError as e:
+                await _append_status_to_message(query, f"\n\n❌ خطا: {e}")
+            except Exception as e:
+                logger.exception("Unexpected error approving renewal request")
+                await _append_status_to_message(query, f"\n\n❌ خطای غیرمنتظره: {e}")
+            return
+
+        # request_type == "new"
         await _append_status_to_message(query, "\n\n⏳ در حال ساخت اکانت روی میکروتیک...")
         shared_users = 1 + int(req.get("extra_users", 0) or 0)
         try:
@@ -1766,6 +2037,37 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    renew_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("renew", renew_start),
+            CallbackQueryHandler(renew_start, pattern=f"^{MENU_RENEW_CB}$"),
+        ],
+        states={
+            RENEW_ACCOUNT: [
+                CallbackQueryHandler(renew_select_account, pattern="^renewacc_"),
+                CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
+            ],
+            RENEW_PROFILE: [
+                CallbackQueryHandler(renew_select_profile, pattern="^rprofile_"),
+                CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
+            ],
+            RENEW_DISCOUNT_ASK: [
+                CallbackQueryHandler(renew_discount_ask_callback, pattern="^discount_(yes|no)$"),
+                CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
+            ],
+            RENEW_DISCOUNT_CODE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, renew_get_discount_code),
+                CallbackQueryHandler(renew_discount_ask_callback, pattern="^discount_no$"),
+                CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
+            ],
+            RENEW_RECEIPT: [
+                MessageHandler(filters.PHOTO, renew_get_receipt),
+                CallbackQueryHandler(flow_cancel_callback, pattern="^flow_cancel$"),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
     del_conv = ConversationHandler(
         entry_points=[
             CommandHandler("delvpn", delvpn_start),
@@ -1871,6 +2173,7 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(add_conv)
+    application.add_handler(renew_conv)
     application.add_handler(del_conv)
     application.add_handler(settings_conv)
     application.add_handler(restore_conv)

@@ -139,6 +139,43 @@ class MikrotikManager:
             connection.disconnect()
 
     # ------------------------------------------------------------------
+    # تمدید یوزر موجود (افزودن یک دوره اعتبار جدید، بدون تغییر یوزرنیم/پسورد)
+    # ------------------------------------------------------------------
+    def renew_vpn_user(self, username: str, profile: str) -> bool:
+        """
+        تمدید یک یوزر از قبل موجود: یک رکورد user-profile جدید برای همان یوزر
+        اضافه می‌شود که User Manager آن را به‌صورت خودکار بعد از پایان دوره
+        فعلی (یا بلافاصله اگر یوزر قبلاً منقضی شده) فعال می‌کند. خود یوزر و
+        پسوردش دست‌نخورده باقی می‌مانند؛ فقط اعتبار زمانی اضافه می‌شود.
+        """
+        connection = self._connect()
+        try:
+            api = connection.get_api()
+            user_resource = api.get_resource('/user-manager/user')
+
+            normalized_target = self._normalize(username)
+            all_users = user_resource.get()
+            match = next((u for u in all_users if self._normalize(u.get('name', '')) == normalized_target), None)
+
+            if not match:
+                raise UserNotFoundError(f"یوزری با نام '{username}' پیدا نشد.")
+
+            actual_name = match['name']
+
+            profile_resource = api.get_resource('/user-manager/user-profile')
+            profile_resource.add(user=actual_name, profile=profile)
+            logger.info(f"VPN user '{actual_name}' renewed with profile '{profile}'.")
+            return True
+
+        except UserNotFoundError:
+            raise
+        except Exception as e:
+            logger.error(f"Error renewing vpn user '{username}': {e}")
+            raise MikrotikError(f"خطا در تمدید یوزر: {e}")
+        finally:
+            connection.disconnect()
+
+    # ------------------------------------------------------------------
     # حذف یوزر (به‌همراه رکوردهای پروفایل مرتبط)
     # ------------------------------------------------------------------
     def delete_vpn_user(self, username: str) -> bool:

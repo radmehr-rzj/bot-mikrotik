@@ -73,12 +73,18 @@ def create_welcome_code(discount_type: str, value: float, expires_at: float = No
     کد ساخته‌شده را برمی‌گرداند.
     """
     code = _generate_unique_code()
-    create_code(code, discount_type, value, max_uses=1, expires_at=expires_at)
+    create_code(code, discount_type, value, max_uses=1, expires_at=expires_at, source="welcome")
     return code
 
 
-def create_code(code: str, type_: str, value: float, max_uses: int = None, expires_at: float = None) -> str:
-    """ساخت کد تخفیف جدید. اگر کد از قبل وجود داشته باشد، مقدارش بازنویسی می‌شود."""
+def create_code(code: str, type_: str, value: float, max_uses: int = None, expires_at: float = None,
+                 source: str = "admin") -> str:
+    """ساخت کد تخفیف جدید. اگر کد از قبل وجود داشته باشد، مقدارش بازنویسی می‌شود.
+
+    source مشخص می‌کند این کد را ادمین دستی ساخته ("admin") یا خود ربات
+    به‌صورت خودکار برای خوش‌آمدگویی کاربر جدید ساخته ("welcome"). این فقط
+    برای فیلتر کردن نمایش لیست در پنل ادمین استفاده می‌شود؛ روی اعتبارسنجی
+    و مصرف کد هیچ تاثیری ندارد."""
     normalized = _normalize(code)
     with _LOCK:
         data = _load()
@@ -90,6 +96,7 @@ def create_code(code: str, type_: str, value: float, max_uses: int = None, expir
             "active": True,
             "created_at": time.time(),
             "expires_at": expires_at,
+            "source": source,
         }
         _save(data)
         return normalized
@@ -101,10 +108,23 @@ def get_code(code: str):
         return data.get(_normalize(code))
 
 
-def list_codes() -> dict:
-    """همه کدها، مرتب‌شده بر اساس جدیدترین."""
+def _infer_source(code: str, entry: dict) -> str:
+    """برای رکوردهای قدیمی که قبل از افزودن فیلد source ساخته شده‌اند، بر اساس پیشوند حدس می‌زنیم"""
+    if "source" in entry:
+        return entry["source"]
+    return "welcome" if code.upper().startswith("WELCOME") else "admin"
+
+
+def list_codes(source: str = None) -> dict:
+    """
+    کدها را برمی‌گرداند، مرتب‌شده بر اساس جدیدترین.
+    source=None یعنی همه؛ source="admin" یعنی فقط کدهایی که ادمین با /addcode
+    دستی ساخته؛ source="welcome" یعنی فقط کدهای خودکار خوش‌آمدگویی کاربر جدید.
+    """
     with _LOCK:
         data = _load()
+        if source:
+            data = {c: e for c, e in data.items() if _infer_source(c, e) == source}
         return dict(sorted(data.items(), key=lambda kv: kv[1].get("created_at", 0), reverse=True))
 
 
